@@ -15,22 +15,7 @@ import (
 	"golang.org/x/exp/io/spi/driver"
 )
 
-const (
-	devfs_MAGIC = 107
-
-	devfs_NRBITS   = 8
-	devfs_TYPEBITS = 8
-	devfs_SIZEBITS = 13
-	devfs_DIRBITS  = 3
-
-	devfs_NRSHIFT   = 0
-	devfs_TYPESHIFT = devfs_NRSHIFT + devfs_NRBITS
-	devfs_SIZESHIFT = devfs_TYPESHIFT + devfs_TYPEBITS
-	devfs_DIRSHIFT  = devfs_SIZESHIFT + devfs_SIZEBITS
-
-	devfs_READ  = 2
-	devfs_WRITE = 4
-)
+const iocMagic = uintptr('k')
 
 type payload struct {
 	tx       uint64
@@ -44,6 +29,8 @@ type payload struct {
 	rxNBits  uint8
 	pad      uint16
 }
+
+var payloadSize = int(unsafe.Sizeof(payload{}))
 
 // Devfs is an SPI driver that works against the devfs.
 // You need to have loaded the "spidev" Linux module to use this driver.
@@ -97,25 +84,25 @@ func (c *devfsConn) Configure(k, v int) error {
 	switch k {
 	case driver.Mode:
 		m := uint8(v)
-		if err := c.ioctl(requestCode(devfs_WRITE, devfs_MAGIC, 1, 1), uintptr(unsafe.Pointer(&m))); err != nil {
+		if err := c.ioctl(iow(1, 1), uintptr(unsafe.Pointer(&m))); err != nil {
 			return fmt.Errorf("error setting mode to %v: %v", m, err)
 		}
 		c.mode = m
 	case driver.Bits:
 		b := uint8(v)
-		if err := c.ioctl(requestCode(devfs_WRITE, devfs_MAGIC, 3, 1), uintptr(unsafe.Pointer(&b))); err != nil {
+		if err := c.ioctl(iow(3, 1), uintptr(unsafe.Pointer(&b))); err != nil {
 			return fmt.Errorf("error setting bits per word to %v: %v", b, err)
 		}
 		c.bits = b
 	case driver.MaxSpeed:
 		s := uint32(v)
-		if err := c.ioctl(requestCode(devfs_WRITE, devfs_MAGIC, 4, 4), uintptr(unsafe.Pointer(&s))); err != nil {
+		if err := c.ioctl(iow(4, 4), uintptr(unsafe.Pointer(&s))); err != nil {
 			return fmt.Errorf("error setting speed to %v: %v", s, err)
 		}
 		c.speed = s
 	case driver.Order:
 		o := uint8(v)
-		if err := c.ioctl(requestCode(devfs_WRITE, devfs_MAGIC, 2, 1), uintptr(unsafe.Pointer(&o))); err != nil {
+		if err := c.ioctl(iow(2, 1), uintptr(unsafe.Pointer(&o))); err != nil {
 			return fmt.Errorf("error setting bit order to %v: %v", o, err)
 		}
 	case driver.Delay:
@@ -144,24 +131,34 @@ func (c *devfsConn) Tx(w, r []byte) error {
 		csChange: c.csChange,
 	}
 	// TODO(jbd): Read from the device and fill rx.
-	return c.ioctl(msgRequestCode(1), uintptr(unsafe.Pointer(&p)))
+	return c.ioctl(iocMessage(1), uintptr(unsafe.Pointer(&p)))
 }
 
 func (c *devfsConn) Close() error {
 	return c.f.Close()
 }
 
-// requestCode returns the device specific request code for the specified direction,
-// type, number and size to be used in the ioctl call.
-func requestCode(dir, typ, nr, size uintptr) uintptr {
-	return (dir << devfs_DIRSHIFT) | (typ << devfs_TYPESHIFT) | (nr << devfs_NRSHIFT) | (size << devfs_SIZESHIFT)
+// ioc returns the device specific SPI request code for the specified direction,
+// number and size to be used in the ioctl call.
+// Corresponds to _IOC(dir, SPI_IOC_MAGIC, nr, size).
+func ioc(dir uintptr, nr, size int) uintptr {
+	return (dir << iocDIRSHIFT) | (iocMagic << iocTYPESHIFT) |
+		(uintptr(nr) << iocNRSHIFT) | (uintptr(size) << iocSIZESHIFT)
 }
 
-// msgRequestCode returns the device specific value for the SPI
+// iow returns the device specific SPI write request code for the specified
+// number and size to be used in the ioctl call.
+// Corresponds to _IOW(SPI_IOC_MAGIC, nr, size).
+func iow(nr, size int) uintptr {
+	return ioc(iocWRITE, nr, size)
+}
+
+// iocMessage returns the device specific value for the SPI
 // message payload to be used in the ioctl call.
 // n represents the number of messages.
-func msgRequestCode(n uint32) uintptr {
-	return uintptr(0x40006B00 + (n * 0x200000))
+// Corresponds to SPI_IOC_MESSAGE(n).
+func iocMessage(n int) uintptr {
+	return iow(0, n*payloadSize)
 }
 
 // ioctl makes an IOCTL on the open device file descriptor.
